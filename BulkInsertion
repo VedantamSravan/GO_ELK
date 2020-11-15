@@ -1,0 +1,69 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"io/ioutil"
+	elastic "gopkg.in/olivere/elastic.v7"
+	"bufio"
+	"strings"
+)
+
+
+const (
+	WATCHDIR = "./storage01/"
+)
+
+func main() {
+	files, err := ioutil.ReadDir(WATCHDIR)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var client *elastic.Client
+	hostAddr := "" // Elasticsearch host IP address
+	client, _ = elastic.NewClient(elastic.SetSniff(false), elastic.SetURL(fmt.Sprintf("http://%s:9200/", hostAddr)))
+	ctx := context.Background()
+	/*indexName := "rambabu11"
+	if exists, _ := client.IndexExists(indexName).Do(ctx); !exists {
+		fmt.Println("CreateIndex", indexName)
+		if _, err := client.CreateIndex(indexName).Do(ctx); err != nil {
+			log.Printf("elasticsearch CreateIndex err: %s", err.Error())
+		}
+	}
+	*/
+	for _, file := range files {
+		if strings.HasPrefix(file.Name(), ".") {
+			continue
+		} else {
+			file, err := os.Open(WATCHDIR+file.Name())
+			if err != nil {
+				log.Fatal(err)
+			}
+			defer file.Close()
+			scanner := bufio.NewScanner(file)
+			//e:=0
+			filesize, err := os.Stat(file.Name())
+			if err != nil {
+				fmt.Println(err)
+				continue
+			}
+			bulkRequest := client.Bulk()
+			// get file size
+			fsize := int(filesize.Size())
+			i := 1
+			for scanner.Scan() {
+				if i == fsize {
+					break
+				}
+				req := elastic.NewBulkIndexRequest().Index("subbu").Type("subbu").Doc(scanner.Text())
+				bulkRequest = bulkRequest.Add(req)
+				i++
+
+			}
+			bulkRequest.Do(ctx)
+			log.Println("Bulk request is done")
+		}
+	}
+}
