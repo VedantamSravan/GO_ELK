@@ -8,18 +8,16 @@ import (
 	"fmt"
 	elastic "github.com/olivere/elastic/v7"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"os"
 	"strings"
 	"time"
-
 	"strconv"
 )
 
 const (
 	WATCHDIR = "/storage0/dbpipe/"
-	DESTDIR  = "/storage0/suricata/"
+	DESTDIR  = "/storage0/tmp/logforwarder/"
 
 
 )
@@ -71,7 +69,7 @@ func initaugmentation(suspsignatures bool,suspips bool,suspdomains bool,suspmd5 
 	}
 
 	if suspdomains {
-		result, err := client.Search().Index("augmentation").Query(elastic.NewMatchQuery("augtype.keyword", "suspiciousdomains")).From(1).Size(2000).Do(context.TODO())
+		result, err := client.Search().Index("augmentation").Query(elastic.NewMatchQuery("augtype", "suspiciousdomains")).From(1).Size(2000).Do(context.TODO())
 		if err != nil {
 			fmt.Println(err)
 		}
@@ -86,7 +84,9 @@ func initaugmentation(suspsignatures bool,suspips bool,suspdomains bool,suspmd5 
 			}
 			suspdomainmap[fmt.Sprintf("%v",mapresult["suspdomain"])] = fmt.Sprintf("%v",mapresult["description"])
 
+
 		}
+		fmt.Println(suspdomainmap)
 	}
 
 	if suspmd5 {
@@ -183,6 +183,7 @@ func GetESClient() (*elastic.Client, error) {
 }
 
 func main() {
+	layout := "2006-01-02T15:04:05"
 	//suspiciousips
 	suspips,err := ioutil.ReadFile("/storage0/configuration/suspips.json")
 	if err != nil{
@@ -192,9 +193,10 @@ func main() {
 	if err := json.Unmarshal([]byte(suspips), &suspipsmap); err != nil {
 		fmt.Println(err)
 	}
-	nc_nodename,err := ioutil.ReadFile("/usr/local/ui/public/data/cs_hostname.ini")
-	if err != nil{
-		fmt.Println("Host File Doesnot exist")
+	nc_nodename:="localhost"
+	nc_nodenamebytes,err := ioutil.ReadFile("/usr/local/ui/public/data/cs_hostname.ini")
+	if err == nil{
+		nc_nodename = strings.TrimSuffix(fmt.Sprintf("%s",nc_nodenamebytes), "\n")
 	}
 	client, err := GetESClient()
 	if err != nil {
@@ -203,6 +205,9 @@ func main() {
 	initaugmentation(true,true,true,true,true,true,client) //comment this out on version before.44
 
 	//start := time.Now()
+	var minfilemap = make(map[int64]*os.File)
+	var bufminfilemap = make(map[int64]*bufio.Writer)
+
 	for true {
 
 		items, err := ioutil.ReadDir(WATCHDIR )
@@ -221,9 +226,10 @@ func main() {
 				subitems, _ := ioutil.ReadDir(WATCHDIR  + "/" + item.Name())
 				for _, subitem := range subitems {
 					if !subitem.IsDir() && !strings.HasPrefix(subitem.Name(), ".") {
+
 						file, err := os.Open(WATCHDIR + "/" + item.Name() + "/" + subitem.Name())
 						if err != nil {
-							log.Fatal(err)
+							fmt.Println(err)
 						}else {
 							//defer file.Close() dont use defer close
 							scanner := bufio.NewScanner(file)
@@ -238,8 +244,47 @@ func main() {
 								if err := json.Unmarshal([]byte(scanner.Text()), &objmap); err != nil {
 									fmt.Println(err)
 								}
+								if objmap == nil {
+									fmt.Println(file.Name())
+									continue
 
-								objmap["nodename"] = "nc192"
+								}
+
+								//fmt.Println(objmap["rts"])
+								//fmt.Println(reflect.TypeOf(objmap["rts"]))
+								//var epochseconds uint64 = 0
+								//if objmap["rts"] != nil{
+								//	epochseconds = objmap["rts"].(uint64)
+								//	time.Parse(layout, "2021-05-18T01:34:02")
+								//}
+								timestamparr:= strings.Split(fmt.Sprintf("%v",objmap["timestamp"]),".")
+								tepochseconds,_ := time.Parse(layout, timestamparr[0])
+
+
+								fmt.Println(tepochseconds)
+								fmt.Println(objmap["timestamp"])
+								epochseconds:=tepochseconds.Unix()
+								fmt.Println(tepochseconds,  epochseconds)
+								epochmin := epochseconds/60
+								fpvalue, rtsexists := minfilemap[epochmin]
+								wfpvalue,_ := bufminfilemap[epochmin]
+								if !rtsexists{
+									currHour := epochseconds/3600
+									currMin := (epochseconds/60)%60
+									currDayMin := (epochseconds/60)%1440
+									filepath := fmt.Sprintf("/storage0/int%d/%d_%02d/%s.log",currDayMin,currHour,currMin,objmap["event_type"])
+
+									fpvalue,err = os.OpenFile(filepath,os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
+									if err != nil {
+										fmt.Println(err)
+									}else{
+										wfpvalue = bufio.NewWriter(fpvalue)
+										minfilemap[epochmin] = fpvalue
+										bufminfilemap[epochmin] = wfpvalue
+									}
+
+								}
+								objmap["nodename"] = fmt.Sprintf("%s",nc_nodename)
 								objmap["defended"] = false
 								objmap["suspected"] = false
 								//delete unwanted value
@@ -344,15 +389,13 @@ func main() {
 								if err != nil {
 									fmt.Printf("Error: %s", err.Error())
 								} else {
-									//fmt.Println(string(j))
-									//w.Write([]byte(j))
-									//w.WriteByte('\n')
-									//req := elastic.NewBulkIndexRequest().Index("investigate_" + fmt.Sprintf("%s", nc_nodename) + "_" + item.Name()).Type("_doc").Doc(string(j))
 									req := elastic.NewBulkIndexRequest().Index("investigate_" + fmt.Sprintf("%s", nc_nodename) + "_" + item.Name()).Type("_doc").Doc(string(j))
-
 									bulkRequest = bulkRequest.Add(req)
+									if fpvalue != nil {
+										wfpvalue.Write([]byte(j))
+										wfpvalue.WriteByte('\n')
+									}
 								}
-
 
 							}
 							if !processed {
@@ -388,11 +431,26 @@ func main() {
 							scanner = nil
 
 							os.Mkdir(DESTDIR + item.Name(), 0755)
-							err1 := os.Rename(WATCHDIR  + item.Name() + "/" + subitem.Name(), DESTDIR + item.Name() + "/"  + "_" + subitem.Name())
+							err1 := os.Rename(WATCHDIR  + item.Name() + "/" + subitem.Name(), DESTDIR +  subitem.Name() + ".json")
 							if err1 != nil {
 								fmt.Println(err1)
 							}
 							file.Close()
+							for key, element := range bufminfilemap {
+								if element != nil {
+									element.Flush()
+									delete(bufminfilemap, key)
+								}
+
+							}
+							for key, element := range minfilemap {
+								if element != nil {
+									element.Close()
+									delete(minfilemap, key)
+								}
+							}
+							minfilemap = make(map[int64]*os.File)
+							bufminfilemap = make(map[int64]*bufio.Writer)
 						}
 
 					}
@@ -410,4 +468,14 @@ func main() {
 		}
 	}
 
+}
+func fileExists(filename string) bool {
+	info, err := os.Stat(filename)
+	if err != nil {
+		return false
+	}
+	if os.IsNotExist(err) {
+		return false
+	}
+	return !info.IsDir()
 }
