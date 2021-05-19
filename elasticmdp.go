@@ -262,13 +262,6 @@ func main() {
 
 								}
 
-								//fmt.Println(objmap["rts"])
-								//fmt.Println(reflect.TypeOf(objmap["rts"]))
-								//var epochseconds uint64 = 0
-								//if objmap["rts"] != nil{
-								//	epochseconds = objmap["rts"].(uint64)
-								//	time.Parse(layout, "2021-05-18T01:34:02")
-								//}
 								timestamparr:= strings.Split(fmt.Sprintf("%v",objmap["timestamp"]),".")
 								tepochseconds,_ := time.Parse(layout, timestamparr[0])
 
